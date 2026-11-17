@@ -77,7 +77,6 @@ with tabs[1]:
     summer_table=summer.pivot(index='縣市',columns='年度',values='暑假人次占全年比例').reindex([c for c in CITIES if c in cities])
     summer_table.columns=summer_table.columns.astype(str)
     st.dataframe(summer_table.style.format('{:.1%}',na_rep='缺資料'))
-    st.caption('均勻分布時兩個月約占 16.7%。比例高低是描述性比較，無法單獨證明暑假造成旅遊增加。')
 with tabs[2]:
     st.caption('上方統計依側邊欄篩選；此頁可另選景點，並切換分布圖的分析對象。')
     city_col,spot_col=st.columns(2)
@@ -105,13 +104,19 @@ with tabs[2]:
     values=distribution.visits.dropna()
     if len(values):
         maximum=float(values.max())
+        minimum=float(values.min())
+        positive_log=hist_mode=='對數間距分組' and minimum>0 and maximum>minimum
         edges=np.expm1(np.linspace(0,np.log1p(max(maximum,1)),26)) if hist_mode=='對數間距分組' else np.linspace(0,max(maximum,1),26)
+        if positive_log:edges=np.geomspace(minimum,maximum,26)
+        edges[0]=minimum if positive_log else 0
         edges[-1]=max(maximum,1)
         counts,edges=np.histogram(values,bins=edges)
         hist=pd.DataFrame({'下界':edges[:-1],'上界':edges[1:],'筆數':counts})
         hs=alt.Scale(type='symlog',constant=1,zero=True,nice=False,domain=[0,max(maximum,1)]) if hist_mode=='對數間距分組' else alt.Scale(zero=True,nice=False,domain=[0,max(maximum,1)])
-        st.altair_chart(alt.Chart(hist).mark_bar(orient='vertical').encode(x=alt.X('下界:Q',title='景點單月人次',scale=hs,axis=alt.Axis(format=',.0f',values=[0,10,100,1000,10000,100000,1000000,10000000] if hist_mode=='對數間距分組' else alt.Undefined,grid=False)),x2='上界:Q',y=alt.Y('筆數:Q',title='景點月份筆數'),y2=alt.Y2(datum=0),tooltip=[alt.Tooltip('下界:Q',format=',.1f'),alt.Tooltip('上界:Q',format=',.1f'),'筆數:Q']),width='stretch')
-        st.caption(('對數間距分組讓低人次區間更細、高人次區間更寬。' if hist_mode=='對數間距分組' else '等寬分組在原始人次尺度上劃分相同寬度的區間。')+'柱高表示各區間筆數，包含目前範圍的全部有效值與零值；缺漏值不納入。')
+        if positive_log:hs=alt.Scale(type='log',nice=False,domain=[minimum,maximum])
+        hist_ticks=np.geomspace(minimum,maximum,6).tolist() if positive_log else [v for v in [0,10,100,1000,10000,100000,1000000,10000000] if v<=max(maximum,1)]
+        st.altair_chart(alt.Chart(hist).mark_bar(orient='vertical').encode(x=alt.X('下界:Q',title='景點單月人次',scale=hs,axis=alt.Axis(format=',.0f',values=hist_ticks if hist_mode=='對數間距分組' else alt.Undefined,grid=False)),x2='上界:Q',y=alt.Y('筆數:Q',title='景點月份筆數',axis=alt.Axis(tickMinStep=1)),y2=alt.Y2(datum=0),tooltip=[alt.Tooltip('下界:Q',format=',.1f'),alt.Tooltip('上界:Q',format=',.1f'),'筆數:Q']),width='stretch')
+        st.caption(('對數間距分組依目前資料範圍設定，低人次區間較細、高人次區間較寬。' if hist_mode=='對數間距分組' else '等寬分組在原始人次尺度上劃分相同寬度的區間。')+'柱高表示各區間筆數，包含目前範圍的全部有效值與零值；缺漏值不納入。')
     st.subheader(f'{scope_name}｜月人次分布・箱型圖')
     box_scale = st.radio('人次刻度', ['對稱對數刻度', '原始刻度'], horizontal=True)
     scale = alt.Scale(type='symlog', constant=10000, zero=True) if box_scale == '對稱對數刻度' else alt.Scale(zero=True)
@@ -143,8 +148,6 @@ with tabs[3]:
 - 景點沿用整理者名稱；尚未逐一驗證更名與統計範圍。異常變動標記僅供查核。
 - 選擇全部樣本時，各年度景點數可能不同。疫情、災害、休園及統計變動都可能影響季節比較。
 
-### 分析問題
-六縣市旺季是否相同？花蓮、臺東的暑假占比是否較高？哪些景點的月人次起伏明顯？請根據圖表提出觀察，另查證原因。
 ''')
     st.subheader('納入景點的四年資料完整度')
     st.caption('僅列目前篩選納入的景點；年數、有效月份及零值月份均以 2022～2025 四年計算。')
