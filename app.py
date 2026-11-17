@@ -88,7 +88,7 @@ with tabs[2]:
         counts,edges=np.histogram(values,bins=edges)
         hist=pd.DataFrame({'下界':edges[:-1],'上界':edges[1:],'筆數':counts})
         hs=alt.Scale(type='symlog',constant=1,zero=True) if hist_mode=='對數間距分組' else alt.Scale(zero=True)
-        st.altair_chart(alt.Chart(hist).mark_bar().encode(x=alt.X('下界:Q',title='景點單月人次',scale=hs,axis=alt.Axis(format=',.0f')),x2='上界:Q',y=alt.Y('筆數:Q',title='景點月份筆數'),tooltip=[alt.Tooltip('下界:Q',format=',.1f'),alt.Tooltip('上界:Q',format=',.1f'),'筆數:Q']),width='stretch')
+        st.altair_chart(alt.Chart(hist).mark_bar(orient='vertical').encode(x=alt.X('下界:Q',title='景點單月人次',scale=hs,axis=alt.Axis(format=',.0f',values=[0,10,100,1000,10000,100000,1000000,10000000] if hist_mode=='對數間距分組' else alt.Undefined,grid=False)),x2='上界:Q',y=alt.Y('筆數:Q',title='景點月份筆數'),y2=alt.Y2(datum=0),tooltip=[alt.Tooltip('下界:Q',format=',.1f'),alt.Tooltip('上界:Q',format=',.1f'),'筆數:Q']),width='stretch')
         st.caption('對數間距分組讓低人次區間更細、高人次區間更寬；柱高表示各區間筆數，全部有效值與零值均納入。切換等寬分組可查看原始人次尺度。')
     st.subheader('景點月人次分布 · 箱型圖')
     box_scale = st.radio('人次刻度', ['對稱對數刻度', '原始刻度'], horizontal=True)
