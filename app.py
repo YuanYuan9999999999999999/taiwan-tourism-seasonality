@@ -10,6 +10,24 @@ COLORS=['#4C9AFF','#A78BFA','#FFB454','#F472B6','#34D399','#22D3EE']
 YEAR_COLORS=['#60A5FA','#FBBF24','#A78BFA','#34D399']
 def export_months(data):
     return data[['county','spot','year','month','visits','fixed','break_vs_prev_year']].sort_values(['county','spot','year','month']).rename(columns={'county':'縣市','spot':'景點','year':'年度','month':'月份','visits':'遊客人次','fixed':'四年完整樣本','break_vs_prev_year':'來源年度異常標記'})
+
+def seasonal_months(data):
+    """Use complete county-years; normalize each year before averaging years."""
+    monthly=data.groupby(['county','year','month'],as_index=False).agg(
+        visits=('visits',lambda values:values.sum(min_count=1)),
+        records=('visits','size'),valid=('visits','count'),
+    )
+    monthly['complete']=monthly.valid.eq(monthly.records)
+    annual=monthly.groupby(['county','year'],as_index=False).agg(
+        months=('month','nunique'),complete=('complete','all'),
+        annual_visits=('visits',lambda values:values.sum(min_count=1)),
+    )
+    annual['eligible']=annual.months.eq(12)&annual.complete&annual.annual_visits.gt(0)
+    eligible=annual.loc[annual.eligible,['county','year','annual_visits']]
+    result=monthly.merge(eligible,on=['county','year'],how='inner')
+    result['monthly_average']=result.annual_visits/12
+    result['season_index']=result.visits/result.monthly_average*100
+    return result,annual.loc[~annual.eligible,['county','year']]
 @st.cache_data
 def load():
     raw=pd.read_csv(Path(__file__).parent/'data/tourism.csv')
@@ -54,13 +72,44 @@ year_scale=alt.Scale(domain=[str(y) for y in sorted(years)],range=[YEAR_COLORS[y
 tabs=st.tabs(['縣市總覽','淡旺季比較','景點探索','資料與方法'])
 monthly=x.groupby(['county','year','month'],as_index=False).visits.sum(min_count=1)
 monthly['date']=pd.to_datetime(dict(year=monthly.year,month=monthly.month,day=1))
+seasonal,omitted=seasonal_months(x)
+color_scale=alt.Scale(domain=[c for c in CITIES if c in cities],range=[COLORS[CITIES.index(c)] for c in CITIES if c in cities])
+display_monthly=monthly.rename(columns={'date':'年月','visits':'遊客人次','county':'縣市'})
 with tabs[0]:
-    st.subheader('每月遊客人次 · 折線圖')
-    overview_zoom=alt.selection_interval(name='overview_zoom',bind='scales',encodings=['x'],clear='dblclick')
-    display_monthly=monthly.rename(columns={'date':'年月','visits':'遊客人次','county':'縣市'})
-    color_scale=alt.Scale(domain=[c for c in CITIES if c in cities],range=[COLORS[CITIES.index(c)] for c in CITIES if c in cities])
-    st.altair_chart(alt.Chart(display_monthly).mark_line(clip=True).encode(x=alt.X('年月:T',scale=alt.Scale(domain=[monthly.date.min().isoformat(),monthly.date.max().isoformat()]),axis=alt.Axis(format='%Y/%m',tickCount=8,labelAngle=-30)),y=alt.Y('遊客人次:Q',scale=alt.Scale(zero=False)),color=alt.Color('縣市:N',scale=color_scale),tooltip=['縣市:N',alt.Tooltip('年月:T',format='%Y-%m'),'遊客人次:Q']).transform_filter(overview_zoom).add_params(overview_zoom),width='stretch')
-    st.caption('圖內滾輪拉近時段、拖曳左右平移；縱軸依可見資料自動調整，雙擊還原完整期間。')
+    st.subheader('每月觀光趨勢 · 折線圖')
+    metric=st.radio('分析指標',['實際遊客人次','季節指數'],horizontal=True,key='trend_metric')
+    if metric=='實際遊客人次':
+        overview_zoom=alt.selection_interval(name='overview_zoom',bind='scales',encodings=['x'],clear='dblclick')
+        st.altair_chart(alt.Chart(display_monthly).mark_line(clip=True).encode(x=alt.X('年月:T',scale=alt.Scale(domain=[monthly.date.min().isoformat(),monthly.date.max().isoformat()]),axis=alt.Axis(format='%Y/%m',tickCount=8,labelAngle=-30)),y=alt.Y('遊客人次:Q',scale=alt.Scale(zero=False)),color=alt.Color('縣市:N',scale=color_scale),tooltip=['縣市:N',alt.Tooltip('年月:T',format='%Y-%m'),'遊客人次:Q']).transform_filter(overview_zoom).add_params(overview_zoom),width='stretch')
+        st.caption('圖內滾輪拉近時段、拖曳左右平移；縱軸依可見資料自動調整，雙擊還原完整期間。')
+    else:
+        st.caption('季節指數＝當月人次 ÷ 該縣市該年度平均月人次 × 100。100 為全年月平均；120 表示高於月平均 20%。')
+        comparison=st.radio('季節指數比較方式',['跨縣市比較','同一縣市跨年度'],horizontal=True)
+        if seasonal.empty:
+            st.info('目前篩選沒有全年資料完整且總人次大於零的縣市年度，無法計算季節指數。')
+        else:
+            if comparison=='跨縣市比較':
+                trend=seasonal.groupby(['county','month'],as_index=False).agg(season_index=('season_index','mean'),years=('year','nunique'))
+                trend=trend.rename(columns={'county':'縣市','month':'月份','season_index':'季節指數','years':'納入年數'})
+                series=alt.Color('縣市:N',scale=color_scale)
+                tips=['縣市:N','月份:O',alt.Tooltip('季節指數:Q',format='.1f'),'納入年數:Q']
+                st.caption('各年度先各自標準化，再將所選有效年度的同月份指數等權平均。')
+            else:
+                season_city=st.selectbox('季節指數縣市',[c for c in CITIES if c in seasonal.county.unique()])
+                trend=seasonal.loc[seasonal.county.eq(season_city)].rename(columns={'year':'年度','month':'月份','season_index':'季節指數','visits':'遊客人次','monthly_average':'該年平均月人次'})
+                trend['年度']=trend['年度'].astype(str)
+                series=alt.Color('年度:N',scale=year_scale)
+                tips=['年度:N','月份:O',alt.Tooltip('季節指數:Q',format='.1f'),alt.Tooltip('遊客人次:Q',format=',.0f'),alt.Tooltip('該年平均月人次:Q',format=',.0f')]
+            season_zoom=alt.selection_interval(name='season_zoom',bind='scales',encodings=['x'],clear='dblclick')
+            line=alt.Chart(trend).mark_line(point=True,clip=True).encode(
+                x=alt.X('月份:Q',scale=alt.Scale(domain=[1,12],nice=False,zero=False),axis=alt.Axis(values=list(range(1,13)),format='d')),
+                y=alt.Y('季節指數:Q',scale=alt.Scale(zero=True)),color=series,tooltip=tips,
+            ).transform_filter(season_zoom).add_params(season_zoom)
+            baseline=alt.Chart(pd.DataFrame({'基準':[100]})).mark_rule(color='#A3A3A3',strokeDash=[6,4]).encode(y='基準:Q',tooltip=[alt.Tooltip('基準:Q',title='全年月平均基準')])
+            st.altair_chart((baseline+line).properties(height=350),width='stretch')
+            st.caption('虛線為 100 基準。圖內滾輪拉近月份、拖曳左右平移，雙擊還原。')
+        if not omitted.empty:
+            st.warning('未納入季節指數：'+'、'.join(f'{r.county} {r.year}' for r in omitted.itertuples())+'。須有完整 12 個月、納入景點無缺漏且全年總人次大於零。')
     st.subheader('各年度縣市比較 · 長條圖')
     annual=monthly.groupby(['county','year'],as_index=False).visits.sum(min_count=1).rename(columns={'county':'縣市','year':'年度','visits':'遊客人次'})
     annual['年度']=annual['年度'].astype(str)
@@ -68,12 +117,17 @@ with tabs[0]:
     st.subheader('每月人次組成 · 區域圖')
     st.altair_chart(alt.Chart(display_monthly).mark_area().encode(x=alt.X('年月:T',axis=alt.Axis(format='%Y/%m',tickCount=8,labelAngle=-30)),y=alt.Y('遊客人次:Q',stack='zero'),color=alt.Color('縣市:N',scale=color_scale),tooltip=['縣市:N',alt.Tooltip('年月:T',format='%Y-%m'),'遊客人次:Q']),width='stretch')
 with tabs[1]:
-    st.subheader('相對淡旺季 · 熱圖')
-    monthly['index']=monthly.visits/monthly.groupby(['county','year']).visits.transform('mean').replace(0,float('nan'))
-    heat=monthly.groupby(['county','month'],as_index=False)['index'].mean().rename(columns={'county':'縣市','month':'月份','index':'相對指數'})
-    st.caption('每年先以「當月人次 ÷ 該年平均月人次」標準化，再平均所選年度。1 表示該年平均水準；大於 1 表示較旺。')
-    st.altair_chart(alt.Chart(heat).mark_rect().encode(x=alt.X('月份:O',axis=alt.Axis(labelAngle=0)),y=alt.Y('縣市:N',sort=CITIES),color=alt.Color('相對指數:Q',scale=alt.Scale(scheme='blueorange',domainMid=1),title='相對指數'),tooltip=['縣市:N','月份:O',alt.Tooltip('相對指數:Q',format='.2f')]).properties(height=max(100,46*len(cities))),width='stretch')
-    summer=monthly.groupby(['county','year']).apply(lambda g:g.loc[g.month.isin([7,8]),'visits'].sum()/g.visits.sum() if g.visits.sum()>0 else float('nan'),include_groups=False).rename('暑假人次占全年比例').reset_index()
+    st.subheader('季節指數 · 熱圖')
+    heat=seasonal.groupby(['county','month'],as_index=False).agg(season_index=('season_index','mean'),years=('year','nunique')).rename(columns={'county':'縣市','month':'月份','season_index':'季節指數','years':'納入年數'})
+    st.caption('每年先以「當月人次 ÷ 該年平均月人次 × 100」標準化，再等權平均所選有效年度。100 表示全年月平均水準。')
+    if not omitted.empty:st.warning('以下縣市年度因月份或景點資料不完整、或全年總人次為零，未納入本頁比較：'+'、'.join(f'{r.county} {r.year}' for r in omitted.itertuples()))
+    if heat.empty:
+        st.info('目前沒有可計算季節指數的完整縣市年度。')
+    else:
+        st.altair_chart(alt.Chart(heat).mark_rect().encode(x=alt.X('月份:O',axis=alt.Axis(labelAngle=0)),y=alt.Y('縣市:N',sort=CITIES),color=alt.Color('季節指數:Q',scale=alt.Scale(scheme='blueorange',domainMid=100),title='季節指數'),tooltip=['縣市:N','月份:O',alt.Tooltip('季節指數:Q',format='.1f'),'納入年數:Q']).properties(height=max(100,46*len(cities))),width='stretch')
+        seasonal_export=seasonal[['county','year','month','visits','monthly_average','season_index']].rename(columns={'county':'縣市','year':'年度','month':'月份','visits':'遊客人次','monthly_average':'該年平均月人次','season_index':'季節指數'})
+        st.download_button('下載各年度季節指數',seasonal_export.to_csv(index=False).encode('utf-8-sig'),'tourism-seasonal-index.csv','text/csv')
+    summer=seasonal.groupby(['county','year']).apply(lambda g:g.loc[g.month.isin([7,8]),'visits'].sum()/g.visits.sum(),include_groups=False).rename('暑假人次占全年比例').reset_index() if not seasonal.empty else pd.DataFrame(columns=['county','year','暑假人次占全年比例'])
     st.subheader('7、8 月人次占全年比例')
     summer=summer.rename(columns={'county':'縣市','year':'年度'})
     summer_table=summer.pivot(index='縣市',columns='年度',values='暑假人次占全年比例').reindex([c for c in CITIES if c in cities])
@@ -149,6 +203,8 @@ with tabs[3]:
 - 月欄位轉長格式，非數值及負值視為缺漏，零值保留並提供敏感度篩選。
 - 固定樣本重新以 2022～2025 年皆有資料、共 48 個有效月份判定，未直接採用來源的全歷史固定樣本標記。
 - 年人次採月資料加總，與來源的年度合計可能不同。
+- 季節指數＝該月人次 ÷ 該縣市該年度平均月人次 × 100；各年度分別計算，以 100 為基準。跨年度總覽及熱圖採同月份指數的等權平均。
+- 季節指數及暑假占比只納入全年 12 個月均完整、所選景點無缺漏且全年總人次大於零的縣市年度。零值仍保留；景點缺漏不以其他景點的人次掩蓋。縮放圖表不會重算全年基準。
 - 景點沿用整理者名稱；尚未逐一驗證更名與統計範圍。異常變動標記僅供查核。
 - 選擇全部樣本時，各年度景點數可能不同。疫情、災害、休園及統計變動都可能影響季節比較。
 
