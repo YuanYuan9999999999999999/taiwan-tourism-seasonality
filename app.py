@@ -103,9 +103,9 @@ with tabs[0]:
             season_zoom=alt.selection_interval(name='season_zoom',bind='scales',encodings=['x'],clear='dblclick')
             line=alt.Chart(trend).mark_line(point=True,clip=True).encode(
                 x=alt.X('月份:Q',scale=alt.Scale(domain=[1,12],nice=False,zero=False),axis=alt.Axis(values=list(range(1,13)),format='d')),
-                y=alt.Y('季節指數:Q',scale=alt.Scale(zero=True)),color=series,tooltip=tips,
+                y=alt.Y('季節指數:Q',title='季節指數',scale=alt.Scale(zero=True)),color=series,tooltip=tips,
             ).transform_filter(season_zoom).add_params(season_zoom)
-            baseline=alt.Chart(pd.DataFrame({'基準':[100]})).mark_rule(color='#A3A3A3',strokeDash=[6,4]).encode(y='基準:Q',tooltip=[alt.Tooltip('基準:Q',title='全年月平均基準')])
+            baseline=alt.Chart(pd.DataFrame({'基準':[100]})).mark_rule(color='#A3A3A3',strokeDash=[6,4]).encode(y=alt.Y('基準:Q',title='季節指數'),tooltip=[alt.Tooltip('基準:Q',title='全年月平均基準')])
             st.altair_chart((baseline+line).properties(height=350),width='stretch')
             st.caption('虛線為 100 基準。圖內滾輪拉近月份、拖曳左右平移，雙擊還原。')
         if not omitted.empty:
