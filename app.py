@@ -71,7 +71,7 @@ c.metric('缺漏月份',int(x.visits.isna().sum()))
 st.caption('人次可重複計算，並非縣市不重複旅客數。固定樣本只能控制景點組成，無法排除統計方法或停業的影響。')
 st.caption('目前範圍：'+'、'.join(cities)+'；年度：'+'、'.join(map(str,sorted(years))))
 year_scale=alt.Scale(domain=[str(y) for y in sorted(years)],range=[YEAR_COLORS[y-2022] for y in sorted(years)])
-tabs=st.tabs(['縣市總覽','淡旺季比較','景點探索','資料與方法','3D 地圖'])
+tabs=st.tabs(['縣市總覽','淡旺季比較','景點探索','3D 地圖','資料與方法'])
 monthly=x.groupby(['county','year','month'],as_index=False).visits.sum(min_count=1)
 monthly['date']=pd.to_datetime(dict(year=monthly.year,month=monthly.month,day=1))
 seasonal,omitted=seasonal_months(x)
@@ -232,7 +232,7 @@ with tabs[2]:
     if box_scale == '對稱對數刻度':
         st.caption('對稱對數刻度保留零值並壓縮較大數值；刻度間距不代表相同的人次差。四分位數與離群值仍以原始人次計算。')
     st.caption('每筆觀測為一個景點的一個月份。箱體涵蓋中間 50% 的數值，白線為中位數；鬚延伸至 1.5 倍四分位距內的最遠觀測值，圓點為其外的觀測值。全部資料均保留。')
-with tabs[3]:
+with tabs[4]:
     st.markdown('''### 資料來源與範圍
 原始來源：[交通部觀光署](https://data.gov.tw/dataset/8116)。本網站內附 [觀光放大鏡整理 CSV](https://tourismlens.dream-coders.com/data/tourismlens-spots.csv)，使用六縣市 2022～2025 年資料。
 
@@ -258,7 +258,7 @@ with tabs[3]:
     st.caption(f'下載側邊欄篩選後的 {len(export):,} 筆月資料，包含所選縣市的全部納入景點。景點探索頁的單一景點選擇不影響此下載。')
     st.download_button('下載目前篩選的月資料',export.to_csv(index=False).encode('utf-8-sig'),'tourism-filtered.csv','text/csv')
 
-with tabs[4]:
+with tabs[3]:
     mode = st.radio('地圖資料', ['景點人次', '縣市總量'], horizontal=True)
     if mode == '景點人次':
         locations = pd.read_csv(Path(__file__).parent / 'data/spot_locations.csv')
