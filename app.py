@@ -3,6 +3,7 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 import numpy as np
+import pydeck as pdk
 
 st.set_page_config(page_title='臺灣六縣市觀光季節分析', page_icon='🌤️', layout='wide')
 CITIES=['臺北市','臺中市','臺南市','高雄市','花蓮縣','臺東縣']
@@ -29,10 +30,10 @@ def seasonal_months(data):
     result['season_index']=result.visits/result.monthly_average*100
     return result,annual.loc[~annual.eligible,['county','year']]
 @st.cache_data
-def load():
-    raw=pd.read_csv(Path(__file__).parent/'data/tourism.csv')
+def load(path, modified_ns):
+    raw=pd.read_csv(path)
     raw=raw[raw.county.isin(CITIES)&raw.year.between(2022,2025)].copy()
-    long=raw.melt(id_vars=['county','spot','year','break_vs_prev_year'],value_vars=[f'm{i}' for i in range(1,13)],var_name='month',value_name='visits')
+    long=raw.melt(id_vars=['county','spot','year','break_vs_prev_year','室內外比較組別'],value_vars=[f'm{i}' for i in range(1,13)],var_name='month',value_name='visits')
     long['month']=long.month.str[1:].astype(int)
     long['visits']=pd.to_numeric(long.visits,errors='coerce')
     long.loc[long.visits<0,'visits']=float('nan')
@@ -41,7 +42,8 @@ def load():
     long['fixed']=pd.MultiIndex.from_frame(long[['county','spot']]).isin(fixed)
     return long,coverage
 
-df,coverage=load()
+data_path=Path(__file__).parent/'data/tourism.csv'
+df,coverage=load(data_path, data_path.stat().st_mtime_ns)
 st.title('臺灣六縣市觀光淡旺季')
 st.caption('Seasonal Tourism in Taiwan: A Comparative Analysis of Six Cities · 2022–2025')
 def reset_filters():
@@ -69,18 +71,20 @@ c.metric('缺漏月份',int(x.visits.isna().sum()))
 st.caption('人次可重複計算，並非縣市不重複旅客數。固定樣本只能控制景點組成，無法排除統計方法或停業的影響。')
 st.caption('目前範圍：'+'、'.join(cities)+'；年度：'+'、'.join(map(str,sorted(years))))
 year_scale=alt.Scale(domain=[str(y) for y in sorted(years)],range=[YEAR_COLORS[y-2022] for y in sorted(years)])
-tabs=st.tabs(['縣市總覽','淡旺季比較','景點探索','資料與方法'])
+tabs=st.tabs(['縣市總覽','淡旺季比較','景點探索','資料與方法','3D 地圖'])
 monthly=x.groupby(['county','year','month'],as_index=False).visits.sum(min_count=1)
 monthly['date']=pd.to_datetime(dict(year=monthly.year,month=monthly.month,day=1))
 seasonal,omitted=seasonal_months(x)
 color_scale=alt.Scale(domain=[c for c in CITIES if c in cities],range=[COLORS[CITIES.index(c)] for c in CITIES if c in cities])
 display_monthly=monthly.rename(columns={'date':'年月','visits':'遊客人次','county':'縣市'})
+year_blocks=pd.Series(sorted(years),index=sorted(years)).diff().ne(1).cumsum()
+display_monthly['連續期間']=monthly.year.map(year_blocks)
 with tabs[0]:
     st.subheader('每月觀光趨勢 · 折線圖')
     metric=st.radio('分析指標',['實際遊客人次','季節指數'],horizontal=True,key='trend_metric')
     if metric=='實際遊客人次':
         overview_zoom=alt.selection_interval(name='overview_zoom',bind='scales',encodings=['x'],clear='dblclick')
-        st.altair_chart(alt.Chart(display_monthly).mark_line(clip=True).encode(x=alt.X('年月:T',scale=alt.Scale(domain=[monthly.date.min().isoformat(),monthly.date.max().isoformat()]),axis=alt.Axis(format='%Y/%m',tickCount=8,labelAngle=-30)),y=alt.Y('遊客人次:Q',scale=alt.Scale(zero=False)),color=alt.Color('縣市:N',scale=color_scale),tooltip=['縣市:N',alt.Tooltip('年月:T',format='%Y-%m'),'遊客人次:Q']).transform_filter(overview_zoom).add_params(overview_zoom),width='stretch')
+        st.altair_chart(alt.Chart(display_monthly).mark_line(clip=True).encode(x=alt.X('年月:T',scale=alt.Scale(domain=[monthly.date.min().isoformat(),monthly.date.max().isoformat()]),axis=alt.Axis(format='%Y/%m',tickCount=8,labelAngle=-30)),y=alt.Y('遊客人次:Q',scale=alt.Scale(zero=False)),color=alt.Color('縣市:N',scale=color_scale),detail='連續期間:N',tooltip=['縣市:N',alt.Tooltip('年月:T',format='%Y-%m'),'遊客人次:Q']).transform_filter(overview_zoom).add_params(overview_zoom),width='stretch')
         st.caption('圖內滾輪拉近時段、拖曳左右平移；縱軸依可見資料自動調整，雙擊還原完整期間。')
     else:
         st.caption('季節指數＝當月人次 ÷ 該縣市該年度平均月人次 × 100。100 為全年月平均；120 表示高於月平均 20%。')
@@ -115,22 +119,57 @@ with tabs[0]:
     annual['年度']=annual['年度'].astype(str)
     st.altair_chart(alt.Chart(annual).mark_bar().encode(x=alt.X('縣市:N',sort=CITIES,axis=alt.Axis(labelAngle=0)),y=alt.Y('遊客人次:Q',title='月資料加總人次'),color=alt.Color('年度:N',scale=year_scale,sort=[str(y) for y in sorted(years)]),xOffset='年度:N',tooltip=['縣市:N','年度:N',alt.Tooltip('遊客人次:Q',format=',.0f')]),width='stretch')
     st.subheader('每月人次組成 · 區域圖')
-    st.altair_chart(alt.Chart(display_monthly).mark_area().encode(x=alt.X('年月:T',axis=alt.Axis(format='%Y/%m',tickCount=8,labelAngle=-30)),y=alt.Y('遊客人次:Q',stack='zero'),color=alt.Color('縣市:N',scale=color_scale),tooltip=['縣市:N',alt.Tooltip('年月:T',format='%Y-%m'),'遊客人次:Q']),width='stretch')
+    st.altair_chart(alt.Chart(display_monthly).mark_area().encode(x=alt.X('年月:T',axis=alt.Axis(format='%Y/%m',tickCount=8,labelAngle=-30)),y=alt.Y('遊客人次:Q',stack='zero'),color=alt.Color('縣市:N',scale=color_scale),detail='連續期間:N',tooltip=['縣市:N',alt.Tooltip('年月:T',format='%Y-%m'),'遊客人次:Q']),width='stretch')
 with tabs[1]:
     st.subheader('季節指數 · 熱圖')
-    heat=seasonal.groupby(['county','month'],as_index=False).agg(season_index=('season_index','mean'),years=('year','nunique')).rename(columns={'county':'縣市','month':'月份','season_index':'季節指數','years':'納入年數'})
-    st.caption('每年先以「當月人次 ÷ 該年平均月人次 × 100」標準化，再等權平均所選有效年度。100 表示全年月平均水準。')
-    if not omitted.empty:st.warning('以下縣市年度因月份或景點資料不完整、或全年總人次為零，未納入本頁比較：'+'、'.join(f'{r.county} {r.year}' for r in omitted.itertuples()))
-    if heat.empty:
-        st.info('目前沒有可計算季節指數的完整縣市年度。')
+    mode=st.radio('熱圖比較方式',['縣市整體','室內外比較'],horizontal=True)
+    if mode=='室內外比較':
+        st.caption('每個景點先跟自己當年的月平均比，再取同組平均。100 代表持平，120 代表平均高出 20%。橫看找旺季，上下看同月哪一組比平常更旺。')
+        classified=x.dropna(subset=['室內外比較組別']).copy()
+        annual_groups=classified.groupby(['county','spot','year']).visits
+        eligible=annual_groups.transform('count').eq(12) & annual_groups.transform('mean').gt(0)
+        classified['指數']=classified.visits.div(annual_groups.transform('mean').where(eligible))*100
+        keys=['county','室內外比較組別','month']
+        spots_by_month=classified.dropna(subset=['指數']).groupby(keys+['spot'],as_index=False)['指數'].mean()
+        space_heat=spots_by_month.groupby(keys,as_index=False).agg(季節指數=('指數','mean'),景點數=('spot','nunique'))
+        if space_heat.empty:
+            st.info('目前篩選沒有可比較的室內或戶外景點。')
+        else:
+            city_prefix=space_heat.county.str[:2]+' ' if len(cities)>1 else ''
+            space_heat['組別']=city_prefix+space_heat['室內外比較組別'].str[:2]+'（'+space_heat['景點數'].astype(str)+' 個景點）'
+            order=space_heat.sort_values(['county','室內外比較組別'],key=lambda col:col.map(CITIES.index) if col.name=='county' else col).組別.unique().tolist()
+            space_heat['相對月平均']=space_heat['季節指數']/100-1
+            cells=alt.Chart(space_heat).encode(
+                x=alt.X('month:O',title='月份',axis=alt.Axis(orient='top',labelAngle=0)),
+                y=alt.Y('組別:N',sort=order,title=None,axis=alt.Axis(labelLimit=180)),
+                tooltip=['組別:N',alt.Tooltip('month:O',title='月份'),alt.Tooltip('季節指數:Q',format='.1f'),alt.Tooltip('相對月平均:Q',format='+.0%')],
+            )
+            tiles=cells.mark_rect().encode(color=alt.Color('季節指數:Q',scale=alt.Scale(domain=[0,100,200],range=['#286291','#f3efe6','#904208'],clamp=True),legend=None))
+            numbers=cells.mark_text(fontSize=11).encode(
+                text=alt.Text('季節指數:Q',format='.0f'),
+                color=alt.condition('datum.季節指數 < 38 || datum.季節指數 > 162',alt.value('white'),alt.value('#202020')),
+            )
+            st.altair_chart((tiles+numbers).properties(height=100+36*len(order)),width='stretch')
+            with st.expander('查看納入景點與計算方式'):
+                members=classified.loc[eligible,['county','室內外比較組別','spot','year']].groupby(['county','室內外比較組別','spot']).year.agg(lambda years:'、'.join(map(str,sorted(years.unique())))).reset_index()
+                st.dataframe(members.rename(columns={'county':'縣市','室內外比較組別':'初步分類','spot':'景點','year':'納入年度'}),hide_index=True)
+                st.write('使用初步分類為室內為主或戶外為主的景點。每個景點按年計算季節指數，僅採用 12 個月都有資料且總人次大於零的年度。先平均同一景點各有效年度的同月份指數，再將同組景點等權平均。')
     else:
-        st.altair_chart(alt.Chart(heat).mark_rect().encode(x=alt.X('月份:O',axis=alt.Axis(labelAngle=0)),y=alt.Y('縣市:N',sort=CITIES),color=alt.Color('季節指數:Q',scale=alt.Scale(scheme='blueorange',domainMid=100),title='季節指數'),tooltip=['縣市:N','月份:O',alt.Tooltip('季節指數:Q',format='.1f'),'納入年數:Q']).properties(height=max(100,46*len(cities))),width='stretch')
-        seasonal_export=seasonal[['county','year','month','visits','monthly_average','season_index']].rename(columns={'county':'縣市','year':'年度','month':'月份','visits':'遊客人次','monthly_average':'該年平均月人次','season_index':'季節指數'})
-        st.download_button('下載各年度季節指數',seasonal_export.to_csv(index=False).encode('utf-8-sig'),'tourism-seasonal-index.csv','text/csv')
+        heat=seasonal.groupby(['county','month'],as_index=False).agg(season_index=('season_index','mean'),years=('year','nunique')).rename(columns={'county':'縣市','month':'月份','season_index':'季節指數','years':'納入年數'})
+        st.caption('每年先以「當月人次 ÷ 該年平均月人次 × 100」標準化，再等權平均所選有效年度。100 表示全年月平均水準。')
+        if not omitted.empty:st.warning('以下縣市年度因月份或景點資料不完整、或全年總人次為零，未納入縣市整體比較：'+'、'.join(f'{r.county} {r.year}' for r in omitted.itertuples()))
+        if heat.empty:
+            st.info('目前沒有可計算季節指數的完整縣市年度。')
+        else:
+            st.altair_chart(alt.Chart(heat).mark_rect().encode(x=alt.X('月份:O',axis=alt.Axis(labelAngle=0)),y=alt.Y('縣市:N',sort=CITIES),color=alt.Color('季節指數:Q',scale=alt.Scale(scheme='blueorange',domain=[0,100,200],clamp=True),title='季節指數'),tooltip=['縣市:N','月份:O',alt.Tooltip('季節指數:Q',format='.1f'),'納入年數:Q']).properties(height=max(100,46*len(cities))),width='stretch')
+            seasonal_export=seasonal[['county','year','month','visits','monthly_average','season_index']].rename(columns={'county':'縣市','year':'年度','month':'月份','visits':'遊客人次','monthly_average':'該年平均月人次','season_index':'季節指數'})
+            st.download_button('下載各年度季節指數',seasonal_export.to_csv(index=False).encode('utf-8-sig'),'tourism-seasonal-index.csv','text/csv')
     summer=seasonal.groupby(['county','year']).apply(lambda g:g.loc[g.month.isin([7,8]),'visits'].sum()/g.visits.sum(),include_groups=False).rename('暑假人次占全年比例').reset_index() if not seasonal.empty else pd.DataFrame(columns=['county','year','暑假人次占全年比例'])
-    st.subheader('7、8 月人次占全年比例')
+    st.divider()
+    st.subheader('各縣市暑假人次占全年比例')
+    st.caption('依左側篩選加總各縣市景點人次，計算每年 7、8 月合計占全年的比例，包含室內外混合的景點。')
     summer=summer.rename(columns={'county':'縣市','year':'年度'})
-    summer_table=summer.pivot(index='縣市',columns='年度',values='暑假人次占全年比例').reindex([c for c in CITIES if c in cities])
+    summer_table=summer.pivot(index='縣市',columns='年度',values='暑假人次占全年比例').reindex(index=[c for c in CITIES if c in cities],columns=sorted(years))
     summer_table.columns=summer_table.columns.astype(str)
     st.dataframe(summer_table.style.format('{:.1%}',na_rep='缺資料'))
 with tabs[2]:
@@ -203,8 +242,9 @@ with tabs[3]:
 - 月欄位轉長格式，非數值及負值視為缺漏，零值保留並提供敏感度篩選。
 - 固定樣本重新以 2022～2025 年皆有資料、共 48 個有效月份判定，未直接採用來源的全歷史固定樣本標記。
 - 年人次採月資料加總，與來源的年度合計可能不同。
-- 季節指數＝該月人次 ÷ 該縣市該年度平均月人次 × 100；各年度分別計算，以 100 為基準。跨年度總覽及熱圖採同月份指數的等權平均。
-- 季節指數及暑假占比只納入全年 12 個月均完整、所選景點無缺漏且全年總人次大於零的縣市年度。零值仍保留；景點缺漏不以其他景點的人次掩蓋。縮放圖表不會重算全年基準。
+- 季節指數＝該月人次 ÷ 該縣市該年度平均月人次 × 100；各年度分別計算，以 100 為基準。跨年度總覽及縣市整體熱圖採同月份指數的等權平均。
+- 室內外熱圖以景點為單位：各景點逐年標準化，平均有效年度後，再平均同組景點。
+- 縣市季節指數及暑假占比只納入全年 12 個月均完整、所選景點無缺漏且全年總人次大於零的縣市年度。零值仍保留；景點缺漏不以其他景點的人次掩蓋。縮放圖表不會重算全年基準。
 - 景點沿用整理者名稱；尚未逐一驗證更名與統計範圍。異常變動標記僅供查核。
 - 選擇全部樣本時，各年度景點數可能不同。疫情、災害、休園及統計變動都可能影響季節比較。
 
@@ -217,3 +257,55 @@ with tabs[3]:
     export=export_months(x)
     st.caption(f'下載側邊欄篩選後的 {len(export):,} 筆月資料，包含所選縣市的全部納入景點。景點探索頁的單一景點選擇不影響此下載。')
     st.download_button('下載目前篩選的月資料',export.to_csv(index=False).encode('utf-8-sig'),'tourism-filtered.csv','text/csv')
+
+with tabs[4]:
+    mode = st.radio('地圖資料', ['景點人次', '縣市總量'], horizontal=True)
+    if mode == '景點人次':
+        locations = pd.read_csv(Path(__file__).parent / 'data/spot_locations.csv')
+        visits = x.groupby(['county', 'spot'], as_index=False).visits.sum(min_count=1).dropna()
+        mapped = visits.merge(locations, on=['county', 'spot'], validate='one_to_one')
+        if mapped.empty:
+            st.info('目前篩選沒有可顯示的人次資料。')
+            st.stop()
+        lon_span = mapped.lon.max() - mapped.lon.min()
+        lat_span = mapped.lat.max() - mapped.lat.min()
+        zoom = float(np.clip(np.log2(220 / max(lon_span, lat_span * 1.4, .035)), 5.6, 13))
+        peak = max(1, mapped.visits.max())
+        scale_meters = 2 ** (7 - zoom)
+        columns = []
+        for row in mapped.itertuples():
+            share = row.visits / peak
+            columns.append(dict(spot=row.spot, county=row.county, landmark=row.landmark,
+                                position=[row.lon, row.lat], total=f'{row.visits:,.0f}',
+                                height=share * 17000 * scale_meters,
+                                color=[248, round(201 - 145 * share), 52]))
+        layers = [pdk.Layer('ColumnLayer', columns, get_position='position', disk_resolution=6,
+                            radius=300 * scale_meters, radius_min_pixels=3, get_elevation='height',
+                            get_fill_color='color', pickable=True, auto_highlight=True)]
+        coincident = mapped[mapped.duplicated(['lon','lat'], keep=False)]
+        view = pdk.ViewState(latitude=(mapped.lat.max()+mapped.lat.min())/2,
+                             longitude=(mapped.lon.max()+mapped.lon.min())/2, zoom=zoom, pitch=47)
+        tip = {'text': '{county} · {spot}\n{total} 人次\n定位：{landmark}'}
+        st.caption(f'共 {len(mapped)} 個景點。柱高與所選期間的累計人次成正比。移到柱上可看數值；街區、步道及跨區景點以代表地標定位。')
+    else:
+        st.caption('每根六角柱代表一個縣市，柱高是所選年度及景點的有效月人次加總。柱子放在縣市代表位置。')
+        locations = {'臺北市': (121.56, 25.04), '臺中市': (120.65, 24.16),
+                     '臺南市': (120.19, 22.99), '高雄市': (120.30, 22.62),
+                     '花蓮縣': (121.61, 23.98), '臺東縣': (121.15, 22.76)}
+        totals = x.groupby('county').visits.sum(min_count=1).dropna()
+        columns = []
+        for county, visits in totals.items():
+            relative = visits / max(1, totals.max())
+            columns.append(dict(county=county, position=list(locations[county]),
+                                height=float(visits / 5000), total=f'{visits:,.0f}',
+                                color=[250, round(205 - 145 * relative), 60]))
+        layers = [pdk.Layer('ColumnLayer', columns, get_position='position', disk_resolution=6,
+                            radius=5500, get_elevation='height', get_fill_color='color', pickable=True)]
+        view = pdk.ViewState(latitude=23.85, longitude=120.95, zoom=6.4, pitch=48)
+        tip = {'text': '{county}：{total} 人次'}
+    st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view, map_style='dark',
+                            tooltip=tip), height=530)
+    if mode=='景點人次' and not coincident.empty:
+        with st.expander('查看共用同一定位的景點'):
+            st.dataframe(coincident[['county','spot','landmark','visits']].rename(columns={'county':'縣市','spot':'統計據點','landmark':'定位地標','visits':'累計人次'}),hide_index=True)
+    st.caption('拖曳平移，滾動縮放；按住 Shift 拖曳可旋轉視角。')
